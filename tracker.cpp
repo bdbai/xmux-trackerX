@@ -164,10 +164,12 @@ static void PrintResponse (FCGX_Stream *out, string status, string body) {
 
 int main ()
 {
+    const int mysql_reconnect_flag = 1;
     FCGX_Stream *in, *out, *err;
     FCGX_ParamArray envp;
     curl = curl_easy_init();
     mysql = mysql_init(NULL);
+    mysql_optionsv(mysql, MYSQL_OPT_RECONNECT, &mysql_reconnect_flag);
     fprintf(stderr, "\n\n%s\n\n", mysql_get_client_info());
     mysql_real_connect(mysql, getenv("MYSQL_HOST"), "tracker", "trackerX", "tracker", 0, NULL, 0);
     fprintf(stderr, "\n\n%s\n\n", mysql_get_server_info(mysql));
@@ -209,13 +211,13 @@ int main ()
             
             bool succeed = true;
             while (FCGX_GetLine(ssid_param, 32, in) != NULL) {
+                cTrim(ssid_param);
                 if (ssid_param[0] == '\0') break;
                 if (!FCGX_GetLine(channel_c, 16, in)) goto INVALID_BODY;
                 if (!FCGX_GetLine(rssi_c, 16, in)) goto INVALID_BODY;
                 if (!FCGX_GetLine(bssid_param, 32, in)) goto INVALID_BODY;
                 channel_param = strtol(channel_c, NULL, 10);
                 rssi_param = strtol(rssi_c, NULL, 10);
-                cTrim(ssid_param);
                 cTrim(bssid_param);
 
                 string bssid = string(bssid_param);
@@ -243,7 +245,7 @@ int main ()
             if (succeed) {
                 PrintResponse(out, "200 OK", "success");
             } else {
-                PrintResponse(out, "500", "unable to write");
+                PrintResponse(out, "500 Internal Server Error", "unable to write");
             }
             continue;
             INVALID_BODY:
