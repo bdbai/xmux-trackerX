@@ -1,8 +1,20 @@
 #include "tracker.h"
 
-static void init () {
+static int initMysql () {
     MYSQL_RES *res;
     MYSQL_ROW row;
+    const int mysql_reconnect_flag = 1;
+    mysql = mysql_init(NULL);
+
+    mysql_optionsv(mysql, MYSQL_OPT_RECONNECT, &mysql_reconnect_flag);
+    fprintf(stderr, "\n\n%s\n\n", mysql_get_client_info());
+    mysql = mysql_real_connect(mysql, getenv("MYSQL_HOST"), "tracker", "trackerX", "tracker", 0, NULL, 0);
+    //if (mysql -> server_status == MYSQL_STATUS)
+    if (mysql == NULL) {
+        fprintf(stderr, "Error connecting to MySQL server. \n");
+        return 1;
+    }
+    fprintf(stderr, "\n\n%s\n\n", mysql_get_server_info(mysql));
 
     updateDeviceStmt = mysql_stmt_init(mysql);
     if (mysql_stmt_prepare(updateDeviceStmt, UPDATE_DEVICE_SQL, strlen(UPDATE_DEVICE_SQL))) check_mysql();
@@ -35,6 +47,7 @@ static void init () {
     if (mysql_query(mysql, "SELECT `id`, `device` FROM `tracker_device`")) check_mysql();
     res = mysql_store_result(mysql);
     if (res == NULL) check_mysql();
+    device_to_id.clear();
     while (row = mysql_fetch_row(res)) {
         string id = string(row[0]);
         string device = string(row[1]);
@@ -46,12 +59,14 @@ static void init () {
             << device
             << endl;
     }
+    mysql_free_result(res);
 
     if (mysql_query(mysql, "SELECT `id`, `bssid` FROM `tracker_hotspot`")) {
         check_mysql();
     }
     res = mysql_store_result(mysql);
     if (res == NULL) check_mysql();
+    bssid_to_id.clear();
     while (row = mysql_fetch_row(res)) {
         string id = string(row[0]);
         string bssid = string(row[1]);
@@ -63,14 +78,23 @@ static void init () {
             << bssid
             << endl;
     }
+    mysql_free_result(res);
+
+    return 0;
+}
+
+static void closeMysql () {
+    mysql_close(mysql);
+    mysql_stmt_close(updateDeviceStmt);
+    mysql_stmt_close(insertHotspotStmt);
 }
 
 static string updateDevice (string device) {
     strncpy(device_param, device.data(), 20);
     device_param_length = device.length();
     if (mysql_stmt_execute(updateDeviceStmt)) {
-        warn_mysql();
-        return 0;
+        warn_mysql("Update device");
+        return "";
     }
     auto id = mysql_insert_id(mysql);
     cerr
@@ -87,7 +111,7 @@ static unsigned long long addHotspot () {
     ssid_param_length = strlen(ssid_param);
     bssid_param_length = strlen(bssid_param);
     if (mysql_stmt_execute(insertHotspotStmt)) {
-        warn_mysql();
+        warn_mysql("Add hotspot");
         return 0;
     }
     auto id = mysql_insert_id(mysql);
@@ -164,21 +188,28 @@ static void PrintResponse (FCGX_Stream *out, string status, string body) {
 
 int main ()
 {
-    const int mysql_reconnect_flag = 1;
     FCGX_Stream *in, *out, *err;
     FCGX_ParamArray envp;
     curl = curl_easy_init();
-    mysql = mysql_init(NULL);
-    mysql_optionsv(mysql, MYSQL_OPT_RECONNECT, &mysql_reconnect_flag);
-    fprintf(stderr, "\n\n%s\n\n", mysql_get_client_info());
-    mysql_real_connect(mysql, getenv("MYSQL_HOST"), "tracker", "trackerX", "tracker", 0, NULL, 0);
-    fprintf(stderr, "\n\n%s\n\n", mysql_get_server_info(mysql));
-    check_mysql();
-    init();
+    if (initMysql()) {
+        return 1;
+    }
 
     while (FCGX_Accept(&in, &out, &err, &envp) >= 0) {
-        if (!mysql_ping(mysql)) {
-            warn_mysql();
+        if (mysql == NULL && initMysql()) {
+            PrintResponse(out, "500 Internal Server Error", "error connecting to mysql");
+            fprintf(stderr, "Error reconnecting to mysql\n");
+            continue; 
+        }
+        if (mysql_ping(mysql)) {
+            warn_mysql("Ping");
+            fprintf(stderr, "Reconnecting to mysql\n");
+            closeMysql();
+            if (initMysql()) {
+                PrintResponse(out, "500 Internal Server Error", "error connecting to mysql");
+                fprintf(stderr, "Error reconnecting to mysql\n");
+                continue;
+            }
         }
         char *contentLength = FCGX_GetParam("CONTENT_LENGTH", envp);
         int len = 0;
@@ -252,9 +283,7 @@ int main ()
             PrintResponse(out, "400 Bad Request", "Invalid parameters.");
         }
     } /* while */
-    mysql_close(mysql);
-    mysql_stmt_close(updateDeviceStmt);
-    mysql_stmt_close(insertHotspotStmt);
+    closeMysql();
     curl_easy_cleanup(curl);
     curl_global_cleanup();
 

@@ -57,9 +57,9 @@ void check_mysql() {
   }
 }
 
-void warn_mysql() {
+void warn_mysql(string act) {
   if (mysql_errno(mysql)) {
-    cerr << "Warning: mysql error: " << string(mysql_error(mysql)) << endl;
+    cerr << act << " warning: mysql error: " << string(mysql_error(mysql)) << endl;
   }
 }
 
