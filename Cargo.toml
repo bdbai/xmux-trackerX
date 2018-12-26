@@ -1,0 +1,9 @@
+[package]
+name = "trackerx"
+version = "0.1.0"
+authors = ["bdbai <bdbaiapp@163.com>"]
+
+[dependencies]
+rocket = "0.4.0-rc.2"
+mysql = "*"
+reqwest = "*"
