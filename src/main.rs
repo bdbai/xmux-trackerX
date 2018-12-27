@@ -24,12 +24,13 @@ mod hotspot;
 use hotspot::Hotspot;
 mod cache;
 use cache::Cache;
+mod cached_status;
+use cached_status::CachedStatus;
 use mysql as my;
 
 fn parse_hotspots<'a>(data: &'a String) -> Result<Vec<Hotspot>, &'static str> {
-    let strs = data.lines()
-        .collect::<Vec<&str>>();
-    strs
+    data.lines()
+        .collect::<Vec<&str>>()
         .chunks_exact(4)
         .map(|buf| Hotspot::parse(buf))
         .collect()
@@ -43,16 +44,16 @@ fn prepare_hotspot(
     {
         let cache = cache.read().unwrap();
         match cache.hotspots.get(&hotspot.bssid) {
-            Some(i) => Some(*i), // Cached already
+            Some(i) => CachedStatus::Cached(*i), // Cached already
             None => match cache.pending_hotspots.get(&hotspot.bssid) {
-                Some(o) => Some(**o.read().unwrap()), // Another thread will store this device_id
-                None => None,                         // Store and cache
+                Some(o) => CachedStatus::Storing(o.clone()), // Another thread will store this device_id
+                None => CachedStatus::NotCached,                         // Store and cache
             },
         }
     }
-    .map(|i| Ok(i))
+    .resolve()
     .unwrap_or_else(|| {
-        let arc = Arc::from(RwLock::from(Box::from(0)));
+        let arc = Arc::from(RwLock::from(0));
         let mut result = (*arc).write().unwrap();
         {
             let mut cache = cache.write().unwrap();
@@ -64,7 +65,7 @@ fn prepare_hotspot(
                 }
             }
         }
-        .map(|l| Ok(**l.read().unwrap()))
+        .map(|l| Ok(*l.read().unwrap()))
         .unwrap_or_else(|| {
             let mut conn = pool.get_conn()?;
             let res = conn.prep_exec(
@@ -79,7 +80,7 @@ fn prepare_hotspot(
             let mut cache = cache.write().unwrap();
             cache.pending_hotspots.remove(&hotspot.bssid);
             cache.hotspots.insert(hotspot.bssid.to_string(), id);
-            **result = id;
+            *result = id;
             println!("New hotspot {} with ID={}", hotspot.bssid, id);
             Ok(id)
         })
@@ -94,16 +95,16 @@ fn prepare_device(
     {
         let cache = cache.read().unwrap();
         match cache.devices.get(&device_id) {
-            Some(i) => Some(*i), // Cached already
+            Some(i) => CachedStatus::Cached(*i), // Cached already
             None => match cache.pending_devices.get(&device_id) {
-                Some(o) => Some(**o.read().unwrap()), // Another thread will store this device_id
-                None => None,                         // Store and cache
+                Some(o) => CachedStatus::Storing(o.clone()), // Another thread will store this device_id
+                None => CachedStatus::NotCached,             // Store and cache
             },
         }
     }
-    .map(|id| Ok(id))
+    .resolve()
     .unwrap_or_else(|| {
-        let arc = Arc::from(RwLock::from(Box::from(0)));
+        let arc = Arc::from(RwLock::from(0));
         let mut result = (*arc).write().unwrap();
         {
             let mut cache = cache.write().unwrap();
@@ -115,7 +116,7 @@ fn prepare_device(
                 }
             }
         }
-        .map(|l| Ok(**l.read().unwrap()))
+        .map(|l| Ok(*l.read().unwrap()))
         .unwrap_or_else(|| {
             let mut conn = pool.get_conn()?;
             let res = conn.prep_exec(
@@ -126,7 +127,7 @@ fn prepare_device(
             let mut cache = cache.write().unwrap();
             cache.pending_devices.remove(&device_id);
             cache.devices.insert(device_id.to_string(), id);
-            **result = id;
+            *result = id;
             println!("New device {} with ID={}", device_id, id);
             Ok(id)
         })
@@ -195,7 +196,7 @@ fn index<'a>(req: &'a rocket::Request, data: Data) -> Outcome<'a> {
         .headers()
         .get_one("Content-Length")
         .and_then(|l| l.parse::<i32>().ok())
-        .unwrap();
+        .unwrap_or(0);
     let device_id = req.headers().get_one("X-Device-Id").unwrap_or("").trim();
     if len > 1024 * 10 {
         res.set_sized_body(Cursor::new("entity too large"));
